@@ -1,0 +1,39 @@
+{
+  "manifest_version": 3,
+  "name": "TradingView Custom Shortcuts",
+  "short_name": "TV Shortcuts",
+  "version": "1.0.0",
+  "description": "Fully customizable single-key shortcuts for TradingView. Press a key to switch timeframes or activate drawing tools.",
+  "author": "TVSC",
+  "minimum_chrome_version": "109",
+  "permissions": ["storage"],
+  "host_permissions": ["https://*.tradingview.com/*"],
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "action": {
+    "default_title": "TV Custom Shortcuts",
+    "default_popup": "src/popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://*.tradingview.com/chart/*",
+        "https://*.tradingview.com/supercharts/*"
+      ],
+      "js": ["src/shared.js", "src/tv-adapter.js", "src/key-engine.js", "src/content.js"],
+      "css": ["src/content.css"],
+      "run_at": "document_idle",
+      "all_frames": false
+    }
+  ]
+}

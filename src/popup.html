@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>TV Custom Shortcuts</title>
+<link rel="stylesheet" href="popup.css" />
+</head>
+<body>
+<div id="app">
+  <header class="top">
+    <div class="brand">
+      <img class="logo" src="../icons/icon32.png" alt="" width="32" height="32" />
+      <div>
+        <div class="title">Custom Shortcuts</div>
+      </div>
+    </div>
+    <label class="switch" title="Enable / disable all shortcuts">
+      <input type="checkbox" id="enabled" checked />
+      <span class="track"><span class="thumb"></span></span>
+    </label>
+  </header>
+
+  <div class="toolbar">
+    <input id="search" type="text" placeholder="Search actions…  (e.g. rectangle, 5m, magnet)" autocomplete="off" spellcheck="false" />
+    <label class="mini-toggle" title="Show toast when a shortcut fires"><input type="checkbox" id="showToast" checked /> toast</label>
+  </div>
+
+  <div id="conflict" class="conflict hidden"></div>
+  <div id="groups"></div>
+
+  <div id="recordingBar" class="recording hidden">Press keys… <kbd>Esc</kbd> cancels</div>
+
+  <footer class="foot">
+    <button id="reset" class="btn ghost" title="Restore default binds">Reset</button>
+    <button id="exportBtn" class="btn ghost" title="Download bindings JSON">Export</button>
+    <button id="importBtn" class="btn ghost" title="Import bindings JSON">Import</button>
+    <input type="file" id="importFile" accept="application/json,.json" hidden />
+    <a class="btn primary" href="https://www.tradingview.com/chart/" target="_blank" rel="noopener">Open chart</a>
+  </footer>
+  <div id="status" class="status">Loading…</div>
+</div>
+<script src="shared.js"></script>
+<script src="popup.js"></script>
+</body>
+</html>
