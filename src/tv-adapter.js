@@ -332,6 +332,80 @@
   }
 
   // ---------- Chart actions ----------
+  function largestChartCanvas() {
+    try {
+      const cs = Array.from(document.querySelectorAll('canvas')).filter(isVisible);
+      cs.sort((a, b) => {
+        const ra = a.getBoundingClientRect(), rb = b.getBoundingClientRect();
+        return (rb.width * rb.height) - (ra.width * ra.height);
+      });
+      return cs[0] || null;
+    } catch (_) { return null; }
+  }
+
+  async function resetViaContextMenu() {
+    // Open TradingView's own chart context menu (synthetic contextmenu does not
+    // trigger the browser's native menu) and click its real "Reset chart view" item.
+    const surface = largestChartCanvas() || document.body;
+    let x = window.innerWidth / 2, y = window.innerHeight / 2;
+    try {
+      const r = surface.getBoundingClientRect();
+      if (r.width > 10 && r.height > 10) { x = r.left + r.width / 2; y = r.top + r.height / 2; }
+    } catch (_) {}
+    try {
+      const press = { bubbles: true, cancelable: true, composed: true, view: window, button: 2, buttons: 2, clientX: x, clientY: y };
+      surface.dispatchEvent(new PointerEvent('pointerdown', press));
+      surface.dispatchEvent(new MouseEvent('mousedown', press));
+      surface.dispatchEvent(new MouseEvent('mouseup', Object.assign({}, press, { buttons: 0, button: 2 })));
+      surface.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, composed: true, view: window, button: 2, buttons: 0, clientX: x, clientY: y }));
+    } catch (_) { return { ok: false, reason: 'ctx-dispatch-failed' }; }
+    await sleep(500);
+    const menu = findMenuRoot();
+    if (!menu) return { ok: false, reason: 'ctx-menu-not-open' };
+    const items = Array.from(menu.querySelectorAll('[role="menuitem"], [role="menuitemradio"], button, [data-name]')).filter(isVisible);
+    const hit = items.find(el => /reset\s+(chart|price|scale|view)/i.test(getAccessibleText(el)));
+    if (!hit) { escapeMenu(); return { ok: false, reason: 'reset-not-in-menu' }; }
+    realClick(hit);
+    await sleep(250);
+    return { ok: true, via: 'context-menu' };
+  }
+
+  async function resetViaNative() {
+    // Alt+R dispatched at several targets (reset is idempotent, so multi-target is safe).
+    // Blind: returns ok, caller tries this only after clickable strategies fail.
+    const init = { bubbles: true, cancelable: true, composed: true, key: 'r', code: 'KeyR', altKey: true, ctrlKey: false, shiftKey: false, metaKey: false, location: 0, repeat: false, isComposing: false };
+    const targets = [];
+    try {
+      if (document.activeElement) targets.push(document.activeElement);
+      const c = largestChartCanvas();
+      if (c && targets.indexOf(c) < 0) targets.push(c);
+      if (document.body) targets.push(document.body);
+      targets.push(document.documentElement);
+      targets.push(document);
+    } catch (_) {}
+    try {
+      window.__tvsc_synthetic = true;
+      for (const t of targets) {
+        try {
+          t.dispatchEvent(new KeyboardEvent('keydown', init));
+          t.dispatchEvent(new KeyboardEvent('keyup', init));
+        } catch (_) {}
+        await sleep(60);
+      }
+      return { ok: true, via: 'native-multi' };
+    } catch (_) { return { ok: false, reason: 'native-failed' }; }
+    finally { setTimeout(() => { window.__tvsc_synthetic = false; }, 0); }
+  }
+
+  async function resetChartScale() {
+    const direct = findByKeywords(['reset chart', 'reset scale', 'reset view', 'reset price scale'], document);
+    if (direct) { realClick(direct); return { ok: true, via: 'toolbar' }; }
+    const ctx = await resetViaContextMenu();
+    if (ctx.ok) return ctx;
+    if (window.__tvsc_debug) console.warn('[TVSC] reset via context menu failed', ctx);
+    return await resetViaNative();
+  }
+
   async function removeAllDrawings() {
     // 1) direct button if present
     const direct = findByKeywords(['remove drawing', 'remove all drawing', 'delete all drawing'], document);
@@ -354,6 +428,7 @@
   }
 
   async function runChartAction(action) {
+    if (action.id === 'chart.reset-scale') return await resetChartScale();
     if (action.id === 'chart.remove-drawings') return await removeAllDrawings();
     if (action.special === 'symbol-search') {
       const sels = ['#header-toolbar-symbol-search', 'button[aria-label*="symbol search" i]', 'button[title*="symbol search" i]'];
@@ -397,4 +472,6 @@
   }
 
   globalThis.TVSC_Adapter = { execute, dispatchNative, findByKeywords, realClick, isVisible };
+  // Console debug hook: run `await __tvsc_resetScale()` on a chart page to test reset directly.
+  globalThis.__tvsc_resetScale = resetChartScale;
 })();
