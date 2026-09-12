@@ -15,9 +15,10 @@ Custom keyboard shortcuts for TradingView. Press a key, it happens.
 - `0` reset chart scale
 - `←` `→` cycle favorited timeframes
 
-Click the extension icon to rebind anything. 99 actions total.
+Click the extension icon to rebind anything. 98 actions total.
 
 ## Notes
 
+- First run adds every timeframe to your favorites — reload the chart once.
 - Shortcuts only fire when the chart is focused. Typing in a search box still types.
 - Arrow cycling needs favorited intervals starred in the timeframe menu.

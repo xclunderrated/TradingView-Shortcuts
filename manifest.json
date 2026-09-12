@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "TradingView Custom Shortcuts",
   "short_name": "TV Shortcuts",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "description": "Fully customizable single-key shortcuts for TradingView. Press a key to switch timeframes or activate drawing tools.",
   "author": "TVSC",
   "minimum_chrome_version": "109",

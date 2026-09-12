@@ -34,6 +34,13 @@
       store.bindings = Object.assign({}, globalThis.TVSC.DEFAULT_BINDINGS);
       rebuildIndex();
     }
+    // First run: seed every timeframe into TradingView favorites so each one
+    // gets a direct button. New buttons render after one page reload.
+    try {
+      if (globalThis.TVSC_Adapter.ensureFavorites() === 'seeded') {
+        toast('All timeframes added — reload the chart once', true);
+      }
+    } catch (_) {}
   }
 
   function ensureToast() {
@@ -91,7 +98,11 @@
         } else {
           const reason = res && res.reason ? res.reason : 'failed';
           if (reason === 'need-2-favorites') {
-            toast('Add 2+ intervals to favorites bar to cycle', true);
+            toast('Star 2+ intervals in the timeframe menu to cycle', true);
+          } else if (reason === 'reload-needed') {
+            toast('Reload the chart once to light up all timeframes', true);
+          } else if (reason === 'tool-not-exact') {
+            toast(action.label + ' — open its options to select it', true);
           } else {
             toast(action.label + ' — unavailable', true);
           }

@@ -31,19 +31,40 @@
     return parts.join(' ').replace(/\s+/g, ' ').replace(/Click to learn more/gi, '').trim().slice(0, 220);
   }
 
-  function realClick(el) {
-    if (!el) return false;
-    try { el.scrollIntoView({ block: 'nearest', inline: 'nearest' }); } catch (_) {}
-    const opts = { bubbles: true, cancelable: true, composed: true, view: window, buttons: 1, button: 0 };
+  function normKey(s) {
+    // 'lock-all' -> 'lock all', 'removeAllDrawingTools' -> 'remove all drawing tools'
+    return (s || '').replace(/([a-z0-9])([A-Z])/g, '$1 $2').toLowerCase().replace(/[-_]+/g, ' ').replace(/\s+/g, ' ').trim();
+  }
+
+  function realClickTarget(el) {
+    // Never click wrapper divs: events bubble UP, so a click on a wrapper never
+    // reaches the inner button's handler. Always resolve to the inner button.
+    if (!el || !(el instanceof Element)) return null;
+    if (el.tagName === 'BUTTON') return el;
     try {
-      el.dispatchEvent(new PointerEvent('pointerdown', opts));
-      el.dispatchEvent(new MouseEvent('mousedown', opts));
-      el.dispatchEvent(new PointerEvent('pointerup', opts));
-      el.dispatchEvent(new MouseEvent('mouseup', opts));
-      el.dispatchEvent(new MouseEvent('click', opts));
-    } catch (_) { /* PointerEvent may not exist — fall through to .click() */ }
-    try { el.click(); } catch (_) {}
-    try { el.focus({ preventScroll: true }); } catch (_) {}
+      const inner = el.querySelector('button');
+      if (inner && isVisible(inner)) return inner;
+    } catch (_) {}
+    return el;
+  }
+
+  function realClick(el) {
+    // Single activation only: exactly one click event (toggle-safe).
+    const t = realClickTarget(el);
+    if (!t) return false;
+    try { t.scrollIntoView({ block: 'nearest', inline: 'nearest' }); } catch (_) {}
+    const o = { bubbles: true, cancelable: true, composed: true, view: window, button: 0, buttons: 0 };
+    const down = Object.assign({}, o, { buttons: 1 });
+    try {
+      t.dispatchEvent(new PointerEvent('pointerdown', down));
+      t.dispatchEvent(new MouseEvent('mousedown', down));
+      t.dispatchEvent(new PointerEvent('pointerup', o));
+      t.dispatchEvent(new MouseEvent('mouseup', o));
+      t.dispatchEvent(new MouseEvent('click', o));
+    } catch (_) {
+      try { t.click(); } catch (_) { return false; }
+    }
+    try { t.focus({ preventScroll: true }); } catch (_) {}
     return true;
   }
 
@@ -57,10 +78,10 @@
   }
 
   function matchScore(text, keywords) {
-    const t = (text || '').toLowerCase();
+    const t = normKey(text);
     let best = 0;
-    for (const kw of keywords) {
-      const k = kw.toLowerCase();
+    for (const kwRaw of keywords) {
+      const k = normKey(kwRaw);
       if (!k) continue;
       if (t === k) return 100;
       if (t.startsWith(k)) best = Math.max(best, 70);
@@ -69,15 +90,57 @@
     return best;
   }
 
+  function depth(el) {
+    let d = 0;
+    while (el && el !== document.body && d < 60) { d++; el = el.parentElement; }
+    return d;
+  }
+
   function findByKeywords(keywords, scope) {
     if (!keywords || !keywords.length) return null;
     const cands = allClickables(scope).filter(isVisible);
-    let best = null, bestScore = 0;
+    // score desc, then real BUTTONs first, then deepest (innermost) first:
+    // TradingView toolbar controls are icon-only div[data-name] wrappers around
+    // the actual <button> — clicking the wrapper never fires the button handler.
+    let best = null, bestScore = 0, bestBtn = -1, bestDepth = -1;
     for (const el of cands) {
       const s = matchScore(getAccessibleText(el), keywords);
-      if (s > bestScore) { bestScore = s; best = el; if (s >= 100) break; }
+      if (s <= 0) continue;
+      const isBtn = el.tagName === 'BUTTON' ? 1 : 0;
+      const dep = depth(el);
+      if (s > bestScore || (s === bestScore && (isBtn > bestBtn || (isBtn === bestBtn && dep > bestDepth)))) {
+        bestScore = s; best = el; bestBtn = isBtn; bestDepth = dep;
+      }
+      if (s >= 100 && isBtn) break;
     }
     return bestScore > 0 ? best : null;
+  }
+
+  function isFloating(el) {
+    try {
+      let p = el;
+      for (let i = 0; i < 6 && p && p !== document.body; i++) {
+        const cs = getComputedStyle(p);
+        if (cs.position === 'fixed' || cs.position === 'absolute' || cs.position === 'sticky') return true;
+        p = p.parentElement;
+      }
+    } catch (_) {}
+    return false;
+  }
+
+  function collectMatches(root, predicate) {
+    // Visible matches anywhere, floating (menu/flyout) ones first.
+    const out = [];
+    const els = (root || document).querySelectorAll('div[role="row"][data-value], [data-value], [role="menuitem"], [role="menuitemradio"], [role="option"], button');
+    for (const el of els) {
+      try {
+        if (!isVisible(el)) continue;
+        const score = predicate(el);
+        if (score > 0) out.push({ el, score, floating: isFloating(el) ? 1 : 0 });
+      } catch (_) {}
+    }
+    out.sort((a, b) => (b.floating - a.floating) || (b.score - a.score));
+    return out;
   }
 
   function dispatchNative(native) {
@@ -101,13 +164,6 @@
       return true;
     } catch (_) { return false; }
     finally { setTimeout(() => { window.__tvsc_synthetic = false; }, 0); }
-  }
-
-  function escapeMenu() {
-    try {
-      (document.activeElement || document.body).dispatchEvent(
-        new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', bubbles: true, cancelable: true }));
-    } catch (_) {}
   }
 
   // ---------- Interval (timeframe) ----------
@@ -140,106 +196,112 @@
     return null;
   }
 
-  function findMenuRoot() {
-    const sels = [
-      '[data-name="menu-inner"]',
-      '[role="menu"]',
-      'div[class*="menuBox"]',
-      'div[class*="dropdownMenu"]'
-    ];
-    for (const s of sels) {
-      try {
-        const els = Array.from(document.querySelectorAll(s)).filter(isVisible);
-        if (els.length) return els[els.length - 1];
-      } catch (_) {}
-    }
-    return null;
+  // Every interval we support, in TradingView's own resolution format.
+  // Written to tradingview.IntervalWidget.quicks so each one gets a direct
+  // favorite button (one click, no menu). Same-origin localStorage is shared
+  // between the page and this content script. Verified live: seed + reload
+  // renders all 26 as header buttons.
+  const QUICKS_KEY = 'tradingview.IntervalWidget.quicks';
+  const QUICKS_SEED = ['1S', '5S', '15S', '30S', '1', '2', '3', '5', '10', '15', '30', '45', '60', '120', '180', '240', '360', '480', '720', 'D', '3D', 'W', 'M', '3M', '6M', '12M'];
+
+  function readQuicks() {
+    try {
+      const raw = localStorage.getItem(QUICKS_KEY);
+      const arr = raw ? JSON.parse(raw) : [];
+      return Array.isArray(arr) ? arr.map(String) : [];
+    } catch (_) { return []; }
   }
 
-  function norm(s) { return (s || '').toLowerCase().replace(/\s+/g, ' ').trim(); }
+  // Merges every supported resolution into favorites. Returns 'ready' when all
+  // are present, 'seeded' when we just added missing ones (page reload needed
+  // once for the new buttons to render).
+  function ensureFavorites() {
+    try {
+      const have = new Set(readQuicks());
+      const missing = QUICKS_SEED.filter(v => !have.has(v));
+      if (!missing.length) return 'ready';
+      localStorage.setItem(QUICKS_KEY, JSON.stringify(readQuicks().concat(missing)));
+      return 'seeded';
+    } catch (_) { return 'error'; }
+  }
 
-  function menuItemMatches(el, action) {
-    const text = norm(getAccessibleText(el));
-    const dv = norm(el.getAttribute && el.getAttribute('data-value'));
-    for (const a of (action.aliases || [])) {
-      const na = norm(a);
-      if (!na) continue;
-      if (dv === na) return true;
-      if (text === na) return true;
-    }
-    // Interval numeric equivalence: data-value "60" == "1h"
-    const id = (action.intervalId || '').toUpperCase();
-    if (dv && dv.toUpperCase() === id) return true;
-    // Text contains full label, e.g. "1 minute"
-    if (text.includes(norm(action.label))) return true;
-    return false;
+  // What the header button shows after a successful switch (lowercased).
+  const EXPECT_TEXT = {
+    '1S': '1s', '5S': '5s', '15S': '15s', '30S': '30s',
+    '1': '1m', '2': '2m', '3': '3m', '5': '5m', '10': '10m', '15': '15m', '30': '30m', '45': '45m',
+    '60': '1h', '120': '2h', '180': '3h', '240': '4h', '360': '6h', '480': '8h', '720': '12h',
+    'D': 'd', '3D': '3d', 'W': 'w', 'M': '1m', '3M': '3m', '6M': '6m', '12M': '12m'
+  };
+
+  function currentIntervalText() {
+    try {
+      const b = document.querySelector('#header-toolbar-intervals button') || document.querySelector('#header-toolbar-intervals');
+      return normKey(b ? b.textContent : '').split(' ')[0];
+    } catch (_) { return ''; }
   }
 
   function findFavoriteIntervalButton(action) {
-    // Favorited intervals appear as small buttons in the top toolbar with text like "1m".
-    // Compare case-sensitively: "1m" (minute) vs "1M" (month range) must not collide.
-    const top = document.querySelector('#header-toolbar-intervals')?.parentElement?.parentElement || document;
-    const btns = Array.from(top.querySelectorAll('button')).filter(isVisible);
+    // Favorited intervals are sibling buttons of the interval button.
+    // Strict text shape only ("1m", "4H", "D", "1W") — never loose matching,
+    // so watchlist/symbol buttons (e.g. "BTCUSD") can never match.
+    // The interval button itself is excluded (clicking it opens the menu).
+    const anchor = document.querySelector('#header-toolbar-intervals');
+    if (!anchor) return null;
+    const scope = anchor.parentElement || document;
+    // The menu-opener button lives inside the anchor alongside the favorites —
+    // exclude exactly that one node (by identity, not by subtree).
+    const opener = anchor.tagName === 'BUTTON' ? anchor : anchor.querySelector('button');
+    const btns = Array.from(scope.querySelectorAll('button')).filter(isVisible)
+      .filter(b => b !== opener);
     const aliases = new Set((action.aliases || []).map(a => (a || '').replace(/\s+/g, ' ').trim()).filter(Boolean));
-    const lower = new Set(Array.from(aliases).map(a => a.toLowerCase()));
+    const SHAPE = /^(\d{1,3}\s*[smhdwSMHDW]|1\s*(second|minute|hour|day|week|month)s?|daily|[dDwWmM])$/;
     for (const b of btns) {
-      const t = ((b.textContent || '').replace(/\s+/g, ' ').trim()).slice(0, 10);
-      if (!t || t.length > 10) continue;
+      const t = ((b.textContent || '').replace(/\s+/g, ' ').trim()).slice(0, 12);
+      if (!t || !SHAPE.test(t)) continue;
       if (aliases.has(t)) return b;
     }
-    // Fallback: case-insensitive full-label match only (avoids "1m" minute/month clash)
+    // Case-insensitive full-label fallback ("1 Minute"), still shape-gated.
+    const lower = new Set(Array.from(aliases).map(a => a.toLowerCase()));
     for (const b of btns) {
-      const t = ((b.textContent || '').replace(/\s+/g, ' ').trim()).slice(0, 10);
-      if (!t) continue;
-      if (lower.has(t.toLowerCase()) && /second|minute|hour|month|week|day/i.test(getAccessibleText(b))) return b;
+      const t = ((b.textContent || '').replace(/\s+/g, ' ').trim()).slice(0, 12);
+      if (!t || !SHAPE.test(t) || t.length <= 2) continue;
+      if (lower.has(t.toLowerCase())) return b;
     }
     return null;
   }
 
   async function setTimeframe(action) {
-    // 1) direct favorite button
+    // Favorite buttons only: every supported interval is seeded into
+    // tradingview.IntervalWidget.quicks (see ensureFavorites), so each one
+    // has a direct one-click button. No dropdown menus involved.
+    const want = EXPECT_TEXT[action.intervalId] || '';
     try {
       const fav = findFavoriteIntervalButton(action);
-      if (fav) { realClick(fav); return { ok: true, via: 'favorite' }; }
-    } catch (_) {}
-
-    // 2) open interval menu and pick
-    const btn = findIntervalButton();
-    if (!btn) return { ok: false, reason: 'interval-button-not-found' };
-    realClick(btn);
-    await sleep(350);
-
-    for (let attempt = 0; attempt < 3; attempt++) {
-      const menu = findMenuRoot();
-      if (menu) {
-        const items = Array.from(menu.querySelectorAll('[role="menuitem"], [role="menuitemradio"], [data-value], button, [role="option"]'));
-        for (const it of items) {
-          if (!isVisible(it)) continue;
-          if (menuItemMatches(it, action)) {
-            realClick(it);
-            await sleep(250);
-            return { ok: true, via: 'menu' };
-          }
+      if (fav) {
+        realClick(fav);
+        // Interval data loads async — poll for the header change.
+        for (let i = 0; i < 8; i++) {
+          await sleep(300);
+          if (!want || currentIntervalText() === want) return { ok: true, via: 'favorite' };
         }
-        // Menu open but item not found — maybe needs scroll; scroll menu and retry once
-        try { menu.scrollTop = menu.scrollHeight; } catch (_) {}
-        await sleep(250);
-        const items2 = Array.from(menu.querySelectorAll('[role="menuitem"], [role="menuitemradio"], [data-value], button'));
-        for (const it of items2) {
-          if (!isVisible(it)) continue;
-          if (menuItemMatches(it, action)) { realClick(it); await sleep(250); return { ok: true, via: 'menu-scroll' }; }
-        }
-        escapeMenu();
-        return { ok: false, reason: 'interval-not-in-menu' };
+        return { ok: false, reason: 'pick-not-applied' };
       }
-      await sleep(300);
-    }
-    escapeMenu();
-    return { ok: false, reason: 'menu-not-open' };
+    } catch (_) {}
+    // Button not rendered yet: seed favorites (first run) and ask for one reload.
+    const st = ensureFavorites();
+    if (st === 'seeded') return { ok: false, reason: 'reload-needed' };
+    return { ok: false, reason: 'interval-not-found' };
   }
 
   // ---------- Range ----------
   async function setRange(action) {
+    // Exact tab button first (stable data-name), text fallback second.
+    if (action.tab) {
+      try {
+        const tab = document.querySelector('[data-name="' + action.tab + '"]');
+        if (tab && isVisible(tab)) { realClick(tab); await sleep(300); return { ok: true, via: 'tab' }; }
+      } catch (_) {}
+    }
     const want = (action.rangeId || '').toUpperCase();
     const btns = Array.from(document.querySelectorAll('button, [role="button"]')).filter(isVisible);
     const inBottom = (el) => {
@@ -259,36 +321,45 @@
   }
 
   // ---------- Favorites cycling ----------
+  const FAV_SHAPE = /^(\d{1,3}\s*[smhdwSMHDW]|1\s*(second|minute|hour|day|week|month)s?|daily|[dDwWmM])$/;
   function collectFavIntervals() {
-    const top = document.querySelector('#header-toolbar-intervals')?.parentElement?.parentElement || document;
-    const btns = Array.from(top.querySelectorAll('button')).filter(isVisible)
-      .map(b => ({ el: b, t: (b.textContent || '').trim() }))
-      .filter(x => x.t && x.t.length <= 8 && /^[\d\w]+$/.test(x.t.replace(/\s/g, '')));
-    // Dedupe, keep order
+    // Buttons in the interval strip, strict interval text shape, opener excluded.
+    // (The old broad scope once matched the "BTCUSD" symbol button.)
+    const anchor = document.querySelector('#header-toolbar-intervals');
+    const scope = (anchor && anchor.parentElement) || document;
+    const opener = anchor ? (anchor.tagName === 'BUTTON' ? anchor : anchor.querySelector('button')) : null;
+    const btns = Array.from(scope.querySelectorAll('button')).filter(isVisible)
+      .filter(b => b !== opener)
+      .map(b => ({ el: b, t: ((b.textContent || '').replace(/\s+/g, ' ').trim()).slice(0, 12) }))
+      .filter(x => x.t && FAV_SHAPE.test(x.t));
     const seen = new Set(); const out = [];
     for (const x of btns) { if (!seen.has(x.t)) { seen.add(x.t); out.push(x); } }
     return out;
   }
 
   function currentIntervalLabel() {
-    const btn = findIntervalButton();
-    return btn ? (btn.textContent || '').trim() : '';
+    try {
+      const b = document.querySelector('#header-toolbar-intervals button') || findIntervalButton();
+      return b ? ((b.textContent || '').replace(/\s+/g, ' ').trim()).slice(0, 12) : '';
+    } catch (_) { return ''; }
   }
 
   async function cycleFav(direction) {
     const favs = collectFavIntervals();
-    if (favs.length < 2) {
-      // Fallback: open menu so user can see intervals
-      const btn = findIntervalButton();
-      if (btn) realClick(btn);
-      return { ok: false, reason: 'need-2-favorites' };
-    }
+    if (favs.length < 2) return { ok: false, reason: 'need-2-favorites' };
     const cur = currentIntervalLabel().toLowerCase().replace(/\s/g, '');
     let idx = favs.findIndex(f => f.t.toLowerCase().replace(/\s/g, '') === cur);
     if (idx < 0) idx = direction > 0 ? -1 : 0;
     const next = favs[(idx + direction + favs.length) % favs.length];
     realClick(next.el);
-    return { ok: true, via: 'cycle', label: next.t };
+    const wantT = next.t.toLowerCase().replace(/\s/g, '');
+    for (let i = 0; i < 8; i++) {
+      await sleep(300);
+      if (currentIntervalLabel().toLowerCase().replace(/\s/g, '') === wantT) {
+        return { ok: true, via: 'cycle', label: next.t };
+      }
+    }
+    return { ok: false, reason: 'pick-not-applied' };
   }
 
   // ---------- Drawings ----------
@@ -300,131 +371,164 @@
     return document;
   }
 
-  async function activateDrawing(action) {
-    const root = drawingToolbarRoot();
-    // 1) click toolbar button
-    let btn = findByKeywords(action.keywords || [], root);
-    if (!btn && root !== document) btn = findByKeywords(action.keywords || [], document);
-    if (btn) {
-      realClick(btn);
-      await sleep(300);
-      // If a flyout menu opened (group tools), pick the exact tool inside it
-      const menu = findMenuRoot();
-      if (menu) {
-        const items = Array.from(menu.querySelectorAll('[role="menuitem"], button, [data-name]'));
-        let best = null, bestScore = 0;
-        for (const it of items) {
-          if (!isVisible(it)) continue;
-          const s = matchScore(getAccessibleText(it), action.keywords || []);
-          if (s > bestScore) { bestScore = s; best = it; }
-        }
-        if (best && bestScore >= 50) { realClick(best); await sleep(150); }
-      }
-      return { ok: true, via: 'toolbar' };
-    }
-    // 2) native hotkey fallback
-    if (action.native) {
-      dispatchNative(action.native);
-      await sleep(150);
-      return { ok: true, via: 'native-fallback' };
-    }
-    return { ok: false, reason: 'tool-not-found' };
-  }
-
-  // ---------- Chart actions ----------
-  function largestChartCanvas() {
+  function groupEl(dn) {
     try {
-      const cs = Array.from(document.querySelectorAll('canvas')).filter(isVisible);
-      cs.sort((a, b) => {
-        const ra = a.getBoundingClientRect(), rb = b.getBoundingClientRect();
-        return (rb.width * rb.height) - (ra.width * ra.height);
-      });
-      return cs[0] || null;
+      const g = document.querySelector('[data-name="' + dn + '"]');
+      return (g && isVisible(g)) ? g : null;
     } catch (_) { return null; }
   }
 
-  async function resetViaContextMenu() {
-    // Open TradingView's own chart context menu (synthetic contextmenu does not
-    // trigger the browser's native menu) and click its real "Reset chart view" item.
-    const surface = largestChartCanvas() || document.body;
-    let x = window.innerWidth / 2, y = window.innerHeight / 2;
+  function groupMainButton(g) {
     try {
-      const r = surface.getBoundingClientRect();
-      if (r.width > 10 && r.height > 10) { x = r.left + r.width / 2; y = r.top + r.height / 2; }
-    } catch (_) {}
-    try {
-      const press = { bubbles: true, cancelable: true, composed: true, view: window, button: 2, buttons: 2, clientX: x, clientY: y };
-      surface.dispatchEvent(new PointerEvent('pointerdown', press));
-      surface.dispatchEvent(new MouseEvent('mousedown', press));
-      surface.dispatchEvent(new MouseEvent('mouseup', Object.assign({}, press, { buttons: 0, button: 2 })));
-      surface.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, composed: true, view: window, button: 2, buttons: 0, clientX: x, clientY: y }));
-    } catch (_) { return { ok: false, reason: 'ctx-dispatch-failed' }; }
-    await sleep(500);
-    const menu = findMenuRoot();
-    if (!menu) return { ok: false, reason: 'ctx-menu-not-open' };
-    const items = Array.from(menu.querySelectorAll('[role="menuitem"], [role="menuitemradio"], button, [data-name]')).filter(isVisible);
-    const hit = items.find(el => /reset\s+(chart|price|scale|view)/i.test(getAccessibleText(el)));
-    if (!hit) { escapeMenu(); return { ok: false, reason: 'reset-not-in-menu' }; }
-    realClick(hit);
-    await sleep(250);
-    return { ok: true, via: 'context-menu' };
+      const btns = Array.from(g.querySelectorAll('button')).filter(isVisible);
+      return btns.length ? btns[0] : null;
+    } catch (_) { return null; }
   }
 
-  async function resetViaNative() {
-    // Alt+R dispatched at several targets (reset is idempotent, so multi-target is safe).
-    // Blind: returns ok, caller tries this only after clickable strategies fail.
-    const init = { bubbles: true, cancelable: true, composed: true, key: 'r', code: 'KeyR', altKey: true, ctrlKey: false, shiftKey: false, metaKey: false, location: 0, repeat: false, isComposing: false };
-    const targets = [];
+  function groupArrowButton(g) {
     try {
-      if (document.activeElement) targets.push(document.activeElement);
-      const c = largestChartCanvas();
-      if (c && targets.indexOf(c) < 0) targets.push(c);
-      if (document.body) targets.push(document.body);
-      targets.push(document.documentElement);
-      targets.push(document);
-    } catch (_) {}
+      const btns = Array.from(g.querySelectorAll('button')).filter(isVisible);
+      return btns.length > 1 ? btns[btns.length - 1] : null;
+    } catch (_) { return null; }
+  }
+
+  function groupCurrentTool(g) {
     try {
-      window.__tvsc_synthetic = true;
-      for (const t of targets) {
-        try {
-          t.dispatchEvent(new KeyboardEvent('keydown', init));
-          t.dispatchEvent(new KeyboardEvent('keyup', init));
-        } catch (_) {}
-        await sleep(60);
+      const b = groupMainButton(g);
+      return normKey(b ? (b.getAttribute('aria-label') || b.getAttribute('data-tooltip') || '') : '');
+    } catch (_) { return ''; }
+  }
+
+  function toolVerified(action, aria) {
+    const want = normKey(action.tool || '');
+    if (!want || !aria) return false;
+    if (action.match === 'is') return aria === want;
+    if (action.match === 'any') return want.split('|').some(w => aria.includes(w));
+    return aria.includes(want);
+  }
+
+  async function activateDrawing(action) {
+    const kws = action.keywords || [];
+    // 1) exact tool button (e.g. user-starred favorite): the label IS the tool.
+    const exact = collectMatches(document, (el) => {
+      const s = matchScore(getAccessibleText(el), kws);
+      return s >= 80 ? s : 0;
+    })[0];
+    if (exact && !action.groupDn) { realClick(exact.el); await sleep(200); return { ok: true, via: 'favorite' }; }
+
+    // 2) group path with post-click verification (the group button's aria-label
+    // always names its current tool, e.g. "Brush", "Trendline").
+    if (action.groupDn) {
+      const g = groupEl(action.groupDn);
+      if (!g) return { ok: false, reason: 'toolbar-not-found' };
+      const main = groupMainButton(g);
+      if (!main) return { ok: false, reason: 'toolbar-not-found' };
+      if (toolVerified(action, groupCurrentTool(g))) {
+        realClick(main);
+        await sleep(200);
+        return { ok: true, via: 'toolbar' };
       }
-      return { ok: true, via: 'native-multi' };
-    } catch (_) { return { ok: false, reason: 'native-failed' }; }
-    finally { setTimeout(() => { window.__tvsc_synthetic = false; }, 0); }
+      // Need a different tool than the group shows: open the variants flyout
+      // via the group's arrow button, then pick the exact tool.
+      const arrow = groupArrowButton(g);
+      if (arrow && arrow !== main) { realClick(arrow); await sleep(500); }
+      else {
+        try {
+          const r = main.getBoundingClientRect();
+          const hov = { bubbles: true, cancelable: true, composed: true, view: window, button: 0, buttons: 0, clientX: r.left + r.width / 2, clientY: r.top + r.height / 2 };
+          main.dispatchEvent(new MouseEvent('mousemove', hov));
+          main.dispatchEvent(new MouseEvent('mouseover', hov));
+        } catch (_) {}
+        await sleep(400);
+      }
+      const picks = collectMatches(document, (el) => {
+        try { if (g.contains(el)) return 0; } catch (_) {}
+        const txt = getAccessibleText(el);
+        const a = normKey(txt);
+        const want = normKey(action.tool || '');
+        if (want && a === want) return 90;
+        const s = matchScore(txt, kws);
+        if (s >= 50) return s;
+        if (want && a.includes(want)) return 70;
+        return 0;
+      }).filter(h => h.floating);
+      if (picks.length) {
+        realClick(picks[0].el);
+        await sleep(300);
+        if (toolVerified(action, groupCurrentTool(g))) return { ok: true, via: 'flyout' };
+        return { ok: false, reason: 'tool-not-exact' };
+      }
+      return { ok: false, reason: 'tool-not-exact' };
+    }
+
+    // 3) standalone controls (measure, zoom, magnet cycle): exact match click.
+    if (exact) { realClick(exact.el); await sleep(200); return { ok: true, via: 'toolbar' }; }
+    const btn = findByKeywords(kws, drawingToolbarRoot()) || findByKeywords(kws, document);
+    if (!btn) return { ok: false, reason: 'tool-not-found' };
+    realClick(btn);
+    await sleep(200);
+    return { ok: true, via: 'toolbar' };
+  }
+
+  // ---------- Chart actions ----------
+  async function tryConfirmDialog() {
+    // Some destructive actions pop a confirmation — approve it so the bind
+    // stays instant (best effort, harmless when no dialog is present).
+    await sleep(500);
+    try {
+      const dlgs = Array.from(document.querySelectorAll('[role="dialog"]')).filter(isVisible);
+      for (const d of dlgs) {
+        const btns = Array.from(d.querySelectorAll('button')).filter(isVisible);
+        const okBtn = btns.find(b => /^(yes|confirm|remove|delete|ok|apply|remove all|delete all)$/i.test((b.textContent || '').trim()));
+        if (okBtn) { realClick(okBtn); await sleep(250); return true; }
+      }
+    } catch (_) {}
+    return false;
+  }
+
+  function findTimeAxis() {
+    // Time scale: wide, short canvas strip at the bottom of the chart.
+    try {
+      const cs = Array.from(document.querySelectorAll('canvas')).filter(isVisible)
+        .map(c => ({ c, r: c.getBoundingClientRect() }))
+        .filter(x => x.r.width > 400 && x.r.height >= 10 && x.r.height <= 80)
+        .sort((a, b) => b.r.y - a.r.y);
+      return cs.length ? cs[0] : null;
+    } catch (_) { return null; }
   }
 
   async function resetChartScale() {
-    const direct = findByKeywords(['reset chart', 'reset scale', 'reset view', 'reset price scale'], document);
-    if (direct) { realClick(direct); return { ok: true, via: 'toolbar' }; }
-    const ctx = await resetViaContextMenu();
-    if (ctx.ok) return ctx;
-    if (window.__tvsc_debug) console.warn('[TVSC] reset via context menu failed', ctx);
-    return await resetViaNative();
+    // Double-clicking the time axis resets the chart view (same end state as
+    // the native Alt+R, verified pixel-for-pixel). Pure DOM mouse events —
+    // synthetic keyboard/contextmenu events are ignored by TradingView.
+    const axis = findTimeAxis();
+    if (!axis) return { ok: false, reason: 'time-axis-not-found' };
+    const x = axis.r.left + axis.r.width / 2, y = axis.r.top + axis.r.height / 2;
+    let el = null;
+    try { el = document.elementFromPoint(x, y) || axis.c; } catch (_) { el = axis.c; }
+    if (!el) return { ok: false, reason: 'time-axis-not-found' };
+    const mk = (buttons) => ({ bubbles: true, cancelable: true, composed: true, view: window, button: 0, buttons, clientX: x, clientY: y });
+    try {
+      for (let k = 0; k < 2; k++) {
+        try { el.dispatchEvent(new PointerEvent('pointerdown', mk(1))); } catch (_) {}
+        el.dispatchEvent(new MouseEvent('mousedown', mk(1)));
+        try { el.dispatchEvent(new PointerEvent('pointerup', mk(0))); } catch (_) {}
+        el.dispatchEvent(new MouseEvent('mouseup', mk(0)));
+        el.dispatchEvent(new MouseEvent('click', mk(0)));
+        await sleep(60);
+      }
+      el.dispatchEvent(new MouseEvent('dblclick', mk(0)));
+    } catch (_) { return { ok: false, reason: 'dblclick-failed' }; }
+    await sleep(400);
+    return { ok: true, via: 'time-axis-dblclick' };
   }
 
   async function removeAllDrawings() {
-    // 1) direct button if present
-    const direct = findByKeywords(['remove drawing', 'remove all drawing', 'delete all drawing'], document);
-    if (direct) { realClick(direct); return { ok: true, via: 'toolbar' }; }
-    // 2) via Object Tree: open it, then click a delete/trash control inside the panel/dialog
-    const treeBtn = findByKeywords(['object tree', 'data window'], document);
-    if (treeBtn) {
-      realClick(treeBtn);
-      await sleep(450);
-      const panel = findMenuRoot() || document;
-      const trash = (function () {
-        const cands = Array.from(panel.querySelectorAll('button, [role="button"]')).filter(isVisible);
-        const scored = cands.map(el => ({ el, s: matchScore(getAccessibleText(el), ['delete all', 'remove all', 'trash', 'delete']) }));
-        scored.sort((a, b) => b.s - a.s);
-        return scored.length && scored[0].s > 0 ? scored[0].el : null;
-      })();
-      if (trash) { realClick(trash); await sleep(300); return { ok: true, via: 'object-tree' }; }
-    }
-    return { ok: false, reason: 'control-not-found' };
+    const direct = findByKeywords(['remove all', 'remove drawing', 'delete all drawing'], document);
+    if (!direct) return { ok: false, reason: 'control-not-found' };
+    realClick(direct);
+    await tryConfirmDialog();
+    return { ok: true, via: 'toolbar' };
   }
 
   async function runChartAction(action) {
@@ -439,21 +543,10 @@
       if (b) { realClick(b); return { ok: true, via: 'symbol-kw' }; }
       return { ok: false, reason: 'symbol-search-not-found' };
     }
-    // Native-backed actions first (most reliable)
-    if (action.id === 'chart.hide-drawings' && action.native) {
-      // Try click first so magnet/lock state UI updates, fallback to native
-      const b = findByKeywords(action.keywords, document);
-      if (b) { realClick(b); return { ok: true, via: 'toolbar' }; }
-      dispatchNative(action.native);
-      return { ok: true, via: 'native' };
-    }
-    if ((action.id === 'chart.quick-search' || action.id === 'chart.screenshot') && action.native) {
-      dispatchNative(action.native);
-      return { ok: true, via: 'native' };
-    }
+    // Every success below means a real click landed. Synthetic keyboard events
+    // are ignored by TradingView, so there are no blind "native" successes.
     const b = findByKeywords(action.keywords || [], document);
     if (b) { realClick(b); return { ok: true, via: 'toolbar' }; }
-    if (action.native) { dispatchNative(action.native); return { ok: true, via: 'native-fallback' }; }
     return { ok: false, reason: 'control-not-found' };
   }
 
@@ -471,7 +564,7 @@
     }
   }
 
-  globalThis.TVSC_Adapter = { execute, dispatchNative, findByKeywords, realClick, isVisible };
+  globalThis.TVSC_Adapter = { execute, dispatchNative, findByKeywords, realClick, isVisible, ensureFavorites };
   // Console debug hook: run `await __tvsc_resetScale()` on a chart page to test reset directly.
   globalThis.__tvsc_resetScale = resetChartScale;
 })();
