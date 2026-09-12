@@ -50,10 +50,17 @@
 
   function realClick(el) {
     // Single activation only: exactly one click event (toggle-safe).
+    // Carries detail + coordinates like a real click; dispatched directly on
+    // the target so overlaying elements can't intercept it.
     const t = realClickTarget(el);
     if (!t) return false;
     try { t.scrollIntoView({ block: 'nearest', inline: 'nearest' }); } catch (_) {}
-    const o = { bubbles: true, cancelable: true, composed: true, view: window, button: 0, buttons: 0 };
+    let x = 0, y = 0;
+    try {
+      const r = t.getBoundingClientRect();
+      x = r.left + r.width / 2; y = r.top + r.height / 2;
+    } catch (_) {}
+    const o = { bubbles: true, cancelable: true, composed: true, view: window, button: 0, buttons: 0, detail: 1, clientX: x, clientY: y };
     const down = Object.assign({}, o, { buttons: 1 });
     try {
       t.dispatchEvent(new PointerEvent('pointerdown', down));
@@ -143,29 +150,6 @@
     return out;
   }
 
-  function dispatchNative(native) {
-    if (!native) return false;
-    const target = document.activeElement && document.activeElement !== document.body
-      ? document.activeElement : document.body || document.documentElement;
-    const init = {
-      bubbles: true, cancelable: true, composed: true,
-      key: native.key || '', code: native.code || '',
-      altKey: !!native.alt, ctrlKey: !!native.ctrl, shiftKey: !!native.shift, metaKey: !!native.meta,
-      location: 0, repeat: false, isComposing: false
-    };
-    try {
-      window.__tvsc_synthetic = true;
-      target.dispatchEvent(new KeyboardEvent('keydown', init));
-      // keypress for printable
-      if ((native.key || '').length === 1) {
-        try { target.dispatchEvent(new KeyboardEvent('keypress', init)); } catch (_) {}
-      }
-      target.dispatchEvent(new KeyboardEvent('keyup', init));
-      return true;
-    } catch (_) { return false; }
-    finally { setTimeout(() => { window.__tvsc_synthetic = false; }, 0); }
-  }
-
   // ---------- Interval (timeframe) ----------
   function intervalButtonSelectors() {
     return [
@@ -230,7 +214,7 @@
     '1S': '1s', '5S': '5s', '15S': '15s', '30S': '30s',
     '1': '1m', '2': '2m', '3': '3m', '5': '5m', '10': '10m', '15': '15m', '30': '30m', '45': '45m',
     '60': '1h', '120': '2h', '180': '3h', '240': '4h', '360': '6h', '480': '8h', '720': '12h',
-    'D': 'd', '3D': '3d', 'W': 'w', 'M': '1m', '3M': '3m', '6M': '6m', '12M': '12m'
+    'D': 'd', '3D': '3d', 'W': 'w', 'M': 'm', '3M': '3m', '6M': '6m', '12M': '12m'
   };
 
   function currentIntervalText() {
@@ -259,6 +243,12 @@
       const t = ((b.textContent || '').replace(/\s+/g, ' ').trim()).slice(0, 12);
       if (!t || !SHAPE.test(t)) continue;
       if (aliases.has(t)) return b;
+      // Single letters match case-insensitively ("D" button vs "d" alias).
+      // Safe: no minute/second action has a bare-letter alias.
+      if (t.length === 1) {
+        const tl = t.toLowerCase();
+        for (const a of aliases) { if (a.length === 1 && a.toLowerCase() === tl) return b; }
+      }
     }
     // Case-insensitive full-label fallback ("1 Minute"), still shape-gated.
     const lower = new Set(Array.from(aliases).map(a => a.toLowerCase()));
@@ -275,6 +265,8 @@
     // tradingview.IntervalWidget.quicks (see ensureFavorites), so each one
     // has a direct one-click button. No dropdown menus involved.
     const want = EXPECT_TEXT[action.intervalId] || '';
+    // Already there counts as success (e.g. the opener shows it but no separate fav exists).
+    try { if (want && currentIntervalText() === want) return { ok: true, via: 'noop' }; } catch (_) {}
     try {
       const fav = findFavoriteIntervalButton(action);
       if (fav) {
@@ -471,12 +463,15 @@
   }
 
   // ---------- Chart actions ----------
-  async function tryConfirmDialog() {
+  async function tryConfirmDialog(knownBefore) {
     // Some destructive actions pop a confirmation — approve it so the bind
-    // stays instant (best effort, harmless when no dialog is present).
+    // stays instant. Only touches dialogs that appeared after our click, never
+    // ones the user already had open. Harmless when nothing appears.
     await sleep(500);
     try {
-      const dlgs = Array.from(document.querySelectorAll('[role="dialog"]')).filter(isVisible);
+      const dlgs = Array.from(document.querySelectorAll('[role="dialog"]'))
+        .filter(isVisible)
+        .filter(d => !knownBefore || !knownBefore.has(d));
       for (const d of dlgs) {
         const btns = Array.from(d.querySelectorAll('button')).filter(isVisible);
         const okBtn = btns.find(b => /^(yes|confirm|remove|delete|ok|apply|remove all|delete all)$/i.test((b.textContent || '').trim()));
@@ -501,12 +496,15 @@
     // Double-clicking the time axis resets the chart view (same end state as
     // the native Alt+R, verified pixel-for-pixel). Pure DOM mouse events —
     // synthetic keyboard/contextmenu events are ignored by TradingView.
+    // Dispatched straight on the canvas so overlays can't intercept.
     const axis = findTimeAxis();
     if (!axis) return { ok: false, reason: 'time-axis-not-found' };
-    const x = axis.r.left + axis.r.width / 2, y = axis.r.top + axis.r.height / 2;
-    let el = null;
-    try { el = document.elementFromPoint(x, y) || axis.c; } catch (_) { el = axis.c; }
-    if (!el) return { ok: false, reason: 'time-axis-not-found' };
+    const el = axis.c;
+    let x = 0, y = 0;
+    try {
+      const r = axis.r;
+      x = r.left + r.width / 2; y = r.top + r.height / 2;
+    } catch (_) { return { ok: false, reason: 'time-axis-not-found' }; }
     const mk = (buttons) => ({ bubbles: true, cancelable: true, composed: true, view: window, button: 0, buttons, clientX: x, clientY: y });
     try {
       for (let k = 0; k < 2; k++) {
@@ -526,8 +524,10 @@
   async function removeAllDrawings() {
     const direct = findByKeywords(['remove all', 'remove drawing', 'delete all drawing'], document);
     if (!direct) return { ok: false, reason: 'control-not-found' };
+    let known = null;
+    try { known = new Set(Array.from(document.querySelectorAll('[role="dialog"]'))); } catch (_) {}
     realClick(direct);
-    await tryConfirmDialog();
+    await tryConfirmDialog(known);
     return { ok: true, via: 'toolbar' };
   }
 
@@ -564,7 +564,7 @@
     }
   }
 
-  globalThis.TVSC_Adapter = { execute, dispatchNative, findByKeywords, realClick, isVisible, ensureFavorites };
+  globalThis.TVSC_Adapter = { execute, findByKeywords, realClick, isVisible, ensureFavorites };
   // Console debug hook: run `await __tvsc_resetScale()` on a chart page to test reset directly.
   globalThis.__tvsc_resetScale = resetChartScale;
 })();

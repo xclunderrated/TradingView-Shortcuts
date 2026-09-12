@@ -117,8 +117,9 @@
     document.addEventListener('keydown', onKeydown, true);
   }
 
-  if (chrome && chrome.storage && chrome.storage.onChanged) {
-    chrome.storage.onChanged.addListener((changes, area) => {
+  const ch = (typeof chrome !== 'undefined') ? chrome : null;
+  if (ch && ch.storage && ch.storage.onChanged) {
+    ch.storage.onChanged.addListener((changes, area) => {
       if (area !== 'sync') return;
       let dirty = false;
       if (changes.enabled) { store.enabled = changes.enabled.newValue !== false; }
@@ -128,7 +129,7 @@
     });
   }
 
-  loadSettings().then(attach);
+  loadSettings().then(attach, () => { try { rebuildIndex(); } catch (_) {} attach(); });
   // Guard for SPA remounts: drop stale toast handle if TradingView replaces DOM
   try {
     const reset = () => { if (toastEl && !document.contains(toastEl)) toastEl = null; };

@@ -51,7 +51,7 @@
     { id: 'timeframe.1D', group: 'tf-daily', kind: 'interval', label: '1 day', intervalId: 'D', aliases: ['d', '1d', '1 day', 'daily'], keywords: [] },
     { id: 'timeframe.3D', group: 'tf-daily', kind: 'interval', label: '3 days', intervalId: '3D', aliases: ['3d', '3 days', '3 day'], keywords: [] },
     { id: 'timeframe.1W', group: 'tf-daily', kind: 'interval', label: '1 week', intervalId: 'W', aliases: ['w', '1w', '1 week', 'weekly'], keywords: [] },
-    { id: 'timeframe.1M', group: 'tf-daily', kind: 'interval', label: '1 month', intervalId: 'M', aliases: ['1mo', '1 mon', '1 month', 'monthly'], keywords: [] },
+    { id: 'timeframe.1M', group: 'tf-daily', kind: 'interval', label: '1 month', intervalId: 'M', aliases: ['M', '1mo', '1 mon', '1 month', 'monthly'], keywords: [] },
     { id: 'timeframe.3M', group: 'tf-daily', kind: 'interval', label: '3 months', intervalId: '3M', aliases: ['3mo', '3 mon', '3 months'], keywords: [] },
     { id: 'timeframe.6M', group: 'tf-daily', kind: 'interval', label: '6 months', intervalId: '6M', aliases: ['6mo', '6 mon', '6 months'], keywords: [] },
     { id: 'timeframe.12M', group: 'tf-daily', kind: 'interval', label: '12 months', intervalId: '12M', aliases: ['12mo', '12 mon', '12 months', '1 year'], keywords: [] },
